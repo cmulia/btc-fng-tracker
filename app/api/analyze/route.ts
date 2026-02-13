@@ -42,13 +42,15 @@ function toResponseJson(value: unknown): ResponseJson {
 }
 
 function extractHeadline(responseJson: ResponseJson): string | null {
-  const looksLikeResponseId = (value: string) => /^resp_[a-z0-9]+$/i.test(value.trim());
+  const looksLikeObjectId = (value: string) =>
+    /^(resp|rs|msg|run|evt)_[a-z0-9]+$/i.test(value.trim());
   const isUsableSentence = (value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return false;
-    if (looksLikeResponseId(trimmed)) return false;
+    if (looksLikeObjectId(trimmed)) return false;
     if (trimmed.length < 20) return false;
     if (!/[a-zA-Z]/.test(trimmed)) return false;
+    if (!/\s/.test(trimmed)) return false;
     return true;
   };
 
