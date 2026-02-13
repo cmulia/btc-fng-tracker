@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type TouchEvent, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
 type RangeKey = "24h" | "7d" | "1m" | "1y" | "5y" | "10y";
@@ -55,6 +55,11 @@ const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
   { key: "1y", label: "1Y" },
   { key: "5y", label: "5Y" },
   { key: "10y", label: "10Y" },
+];
+const FNG_RANGE_OPTIONS: Array<{ key: "1m" | "1y" | "5y"; label: string }> = [
+  { key: "1m", label: "30D" },
+  { key: "1y", label: "1Y" },
+  { key: "5y", label: "5Y" },
 ];
 const AI_DEFAULT_HEADLINE = "Click Analyse to see what I think.";
 const MY_COIN_STORAGE_KEY = "btc_dashboard_my_coin_v1";
@@ -269,9 +274,9 @@ function buildChart(points: ChartPoint[]) {
   }
 
   const width = 1000;
-  const height = 236;
-  const padX = 24;
-  const padY = 20;
+  const height = 620;
+  const padX = 4;
+  const padY = 4;
   const minY = Math.min(...points.map((point) => point.p));
   const maxY = Math.max(...points.map((point) => point.p));
   const minX = points[0].t;
@@ -342,39 +347,6 @@ function buildPathFromSeries(
   return path || null;
 }
 
-function mapFngSeriesToChart(points: ChartPoint[], fngPoints: Array<{ t: number; v: number }>) {
-  if (points.length === 0 || fngPoints.length === 0) return [] as Array<number | null>;
-  const result: Array<number | null> = new Array(points.length).fill(null);
-  let j = 0;
-  for (let i = 0; i < points.length; i += 1) {
-    while (j < fngPoints.length - 1 && fngPoints[j + 1].t <= points[i].t) {
-      j += 1;
-    }
-    result[i] = fngPoints[j]?.v ?? null;
-  }
-  return result;
-}
-
-function buildOscillatorPath(
-  values: Array<number | null>,
-  shape: ReturnType<typeof buildChart>,
-  min = 0,
-  max = 100
-) {
-  if (!shape) return null;
-  const range = Math.max(1, max - min);
-  const toY = (value: number) =>
-    shape.height - shape.padY - ((value - min) / range) * (shape.height - shape.padY * 2);
-  let path = "";
-  for (let idx = 0; idx < values.length; idx += 1) {
-    const value = values[idx];
-    if (value == null || !shape.coords[idx]) continue;
-    const cmd = path.length === 0 ? "M" : " L";
-    path += `${cmd}${shape.coords[idx].x.toFixed(2)} ${toY(value).toFixed(2)}`;
-  }
-  return path || null;
-}
-
 function getRangeDays(range: RangeKey) {
   if (range === "24h") return 1;
   if (range === "7d") return 7;
@@ -435,6 +407,7 @@ export default function Home() {
   const [loginError, setLoginError] = useState<string | null>(null);
 
   const [range, setRange] = useState<RangeKey>("24h");
+  const [fngRange, setFngRange] = useState<"1m" | "1y" | "5y">("1m");
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [activeSection, setActiveSection] = useState<SectionKey>("overview");
   const [aiInsight, setAiInsight] = useState<string | null>(null);
@@ -469,7 +442,7 @@ export default function Home() {
     }
   );
   const fngHistory = useSWR<FngHistoryPayload>(
-    canAccessDashboard ? `/api/fng/history?range=${range}` : null,
+    canAccessDashboard ? `/api/fng/history?range=${fngRange}` : null,
     fetcher,
     { refreshInterval: 1_800_000 }
   );
@@ -672,10 +645,16 @@ export default function Home() {
 
   const chartTicks = useMemo(() => {
     if (!chartStartTs || !chartEndTs) return [];
-    const tickCount = range === "24h" ? 7 : 6;
+    const tickCount = range === "24h" ? 5 : 4;
     const step = (chartEndTs - chartStartTs) / (tickCount - 1);
     return Array.from({ length: tickCount }, (_, idx) => chartStartTs + step * idx);
   }, [chartEndTs, chartStartTs, range]);
+  const chartYTicks = useMemo(() => {
+    if (!chartShape) return [] as number[];
+    const count = 5;
+    const step = (chartShape.maxY - chartShape.minY) / (count - 1);
+    return Array.from({ length: count }, (_, idx) => chartShape.maxY - step * idx);
+  }, [chartShape]);
   const ma50Series = useMemo(() => movingAverage(chartPoints ?? [], 50), [chartPoints]);
   const ma200Series = useMemo(() => movingAverage(chartPoints ?? [], 200), [chartPoints]);
   const ma50Path = useMemo(() => buildPathFromSeries(ma50Series, chartShape), [ma50Series, chartShape]);
@@ -717,19 +696,48 @@ export default function Home() {
       : crossSignal.type === "golden"
         ? "value-up"
         : "value-down";
-  const syntheticFngHistory = useMemo(() => buildSyntheticFng(range), [range]);
+  const syntheticFngHistory = useMemo(() => buildSyntheticFng(fngRange), [fngRange]);
   const displayFngHistory =
     fngHistory.data?.points && fngHistory.data.points.length >= 2
       ? fngHistory.data
       : syntheticFngHistory;
-  const fngOverlayValues = useMemo(
-    () => mapFngSeriesToChart(chartPoints ?? [], displayFngHistory.points),
-    [chartPoints, displayFngHistory.points]
-  );
-  const fngOverlayPath = useMemo(
-    () => buildOscillatorPath(fngOverlayValues, chartShape, 0, 100),
-    [chartShape, fngOverlayValues]
-  );
+  const fngChartTicks = useMemo(() => {
+    const points = displayFngHistory.points ?? [];
+    if (points.length < 2) return [];
+    const tickCount = 4;
+    const start = points[0].t;
+    const end = points[points.length - 1].t;
+    const step = (end - start) / (tickCount - 1);
+    return Array.from({ length: tickCount }, (_, idx) => start + step * idx);
+  }, [displayFngHistory.points]);
+  const fngYTicks = useMemo(() => [100, 75, 55, 25, 0], []);
+
+  const updateHoverIndexFromClientX = (clientX: number, container: HTMLDivElement) => {
+    if (!chartShape || !chartPoints || chartPoints.length === 0) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const relX = clientX - rect.left;
+    const clampedRelX = Math.min(Math.max(relX, 0), rect.width);
+    const svgX = (clampedRelX / rect.width) * chartShape.width;
+    const clampedSvgX = Math.min(
+      Math.max(svgX, chartShape.padX),
+      chartShape.width - chartShape.padX
+    );
+    const normalizedX =
+      (clampedSvgX - chartShape.padX) /
+      (chartShape.width - chartShape.padX * 2);
+    const targetTs = chartShape.minX + normalizedX * (chartShape.maxX - chartShape.minX);
+    const nearest = findNearestPointIndex(chartPoints, targetTs);
+    if (nearest >= 0) {
+      setHoverIndex((prev) => (prev === nearest ? prev : nearest));
+    }
+  };
+
+  const handleChartTouch = (event: TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    updateHoverIndexFromClientX(touch.clientX, event.currentTarget);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1321,7 +1329,7 @@ export default function Home() {
             </p>
           </section>
 
-          <section id="chart" className="ui-card card-enter scroll-mt-4 p-5 sm:p-6" style={{ "--stagger": "220ms" } as CSSProperties}>
+          <section id="chart" className="ui-card card-enter scroll-mt-4 p-4 sm:p-4" style={{ "--stagger": "220ms" } as CSSProperties}>
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-sm ui-soft">BTC Price Chart</p>
@@ -1349,10 +1357,6 @@ export default function Home() {
               <span className="status-badge">
                 <span className="status-dot" style={{ background: "#9333ea" }} />
                 200 MA
-              </span>
-              <span className="status-badge">
-                <span className="status-dot" style={{ background: "#f59e0b" }} />
-                F&G overlay
               </span>
               <span className="status-badge">
                 <span className="status-dot status-dot-fallback" />
@@ -1435,30 +1439,22 @@ export default function Home() {
                     </p>
                   )}
                   <div
-                    className="relative h-[210px] w-full"
+                    className="relative h-[305px] w-full sm:h-[292px]"
                     onMouseLeave={() => setHoverIndex(null)}
                     onMouseMove={(event) => {
-                      if (!chartShape || !chartPoints || chartPoints.length === 0) return;
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      if (rect.width <= 0) return;
-                      const relX = event.clientX - rect.left;
-                      const clampedRelX = Math.min(Math.max(relX, 0), rect.width);
-                      const svgX = (clampedRelX / rect.width) * chartShape.width;
-                      const clampedSvgX = Math.min(
-                        Math.max(svgX, chartShape.padX),
-                        chartShape.width - chartShape.padX
-                      );
-                      const normalizedX =
-                        (clampedSvgX - chartShape.padX) /
-                        (chartShape.width - chartShape.padX * 2);
-                      const targetTs = chartShape.minX + normalizedX * (chartShape.maxX - chartShape.minX);
-                      const nearest = findNearestPointIndex(chartPoints, targetTs);
-                      if (nearest >= 0) {
-                        setHoverIndex((prev) => (prev === nearest ? prev : nearest));
-                      }
+                      updateHoverIndexFromClientX(event.clientX, event.currentTarget);
+                    }}
+                    onTouchStart={handleChartTouch}
+                    onTouchMove={handleChartTouch}
+                    style={{
+                      touchAction: "pan-y",
                     }}
                   >
-                    <svg viewBox={`0 0 ${chartShape.width} ${chartShape.height}`} className="h-full w-full">
+                    <svg
+                      viewBox={`0 0 ${chartShape.width} ${chartShape.height}`}
+                      preserveAspectRatio="none"
+                      className="h-full w-full"
+                    >
                       <defs>
                         <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor="#0f766e" stopOpacity="0.24" />
@@ -1499,17 +1495,6 @@ export default function Home() {
                           fill="none"
                           stroke="#9333ea"
                           strokeWidth="2.2"
-                          strokeLinecap="round"
-                          opacity="0.85"
-                        />
-                      )}
-                      {fngOverlayPath && (
-                        <path
-                          d={fngOverlayPath}
-                          fill="none"
-                          stroke="#f59e0b"
-                          strokeWidth="1.8"
-                          strokeDasharray="5 4"
                           strokeLinecap="round"
                           opacity="0.85"
                         />
@@ -1562,6 +1547,14 @@ export default function Home() {
                         </div>
                       </div>
                     )}
+                    <div className="pointer-events-none absolute left-0 top-0 h-full w-24 bg-[linear-gradient(to_left,rgba(7,11,9,0)_0%,rgba(7,11,9,0.32)_28%,rgba(7,11,9,0.62)_62%,rgba(7,11,9,0.88)_100%)] backdrop-blur-[1px] sm:w-28" />
+                    <div className="pointer-events-none absolute left-0 top-0 flex h-full w-24 flex-col justify-between pl-1.5 text-[10px] ui-soft sm:w-28 sm:pl-2 sm:text-[11px]">
+                      {chartYTicks.map((tick, idx) => (
+                        <span key={`${tick}-${idx}`} className="text-left tabular-nums">
+                          {formatUsd(tick)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                   <div
                     className="mt-2 grid gap-1 border-t border-zinc-200 pt-2 text-[11px] ui-soft"
@@ -1581,50 +1574,118 @@ export default function Home() {
             </div>
 
             <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-3 sm:p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-zinc-900">Historical Fear & Greed Chart</p>
-                <p className="text-xs ui-soft">Source: {displayFngHistory.source ?? "—"}</p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-900">Historical Fear & Greed Chart</p>
+                  <p className="text-xs ui-soft">Source: {displayFngHistory.source ?? "—"}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {FNG_RANGE_OPTIONS.map((option) => {
+                    const active = option.key === fngRange;
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setFngRange(option.key)}
+                        className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                          active
+                            ? "border-zinc-900 bg-zinc-900 text-white"
+                            : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-rose-400" />
+                  Fear (0-25)
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+                  Neutral (26-54)
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-lime-400" />
+                  Greed (55-74)
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  Extreme Greed (75-100)
+                </span>
               </div>
               {fngHistory.isLoading && <p className="py-10 text-center text-sm ui-soft">Loading F&G history...</p>}
               {!fngHistory.isLoading && (
-                <div className="mt-3 h-[130px] w-full">
+                <div className="mt-3">
                   {fngHistory.error && (
                     <p className="mb-2 text-xs text-amber-700">
                       Live update failed; showing fallback F&G data.
                     </p>
                   )}
-                  <svg viewBox="0 0 1000 130" className="h-full w-full">
-                    {(() => {
-                      const points = displayFngHistory.points ?? [];
-                      if (points.length < 2) return null;
-                      const minX = points[0].t;
-                      const maxX = points[points.length - 1].t;
-                      const xRange = Math.max(1, maxX - minX);
-                      const padX = 24;
-                      const padY = 14;
-                      const toX = (value: number) =>
-                        padX + ((value - minX) / xRange) * (1000 - padX * 2);
-                      const toY = (value: number) =>
-                        130 - padY - (Math.max(0, Math.min(100, value)) / 100) * (130 - padY * 2);
-                      const line = points
-                        .map((point, idx) => `${idx === 0 ? "M" : "L"}${toX(point.t).toFixed(2)} ${toY(point.v).toFixed(2)}`)
-                        .join(" ");
-                      const area = `${line} L${toX(points[points.length - 1].t).toFixed(2)} ${(130 - padY).toFixed(2)} L${toX(points[0].t).toFixed(2)} ${(130 - padY).toFixed(2)} Z`;
+                  <div className="relative h-[250px] w-full sm:h-[230px]">
+                    <svg viewBox="0 0 1000 180" preserveAspectRatio="none" className="h-full w-full">
+                      {(() => {
+                        const points = displayFngHistory.points ?? [];
+                        if (points.length < 2) return null;
+                        const minX = points[0].t;
+                        const maxX = points[points.length - 1].t;
+                        const xRange = Math.max(1, maxX - minX);
+                        const padX = 12;
+                        const padY = 10;
+                        const height = 180;
+                        const width = 1000;
+                        const toX = (value: number) =>
+                          padX + ((value - minX) / xRange) * (width - padX * 2);
+                        const toY = (value: number) =>
+                          height - padY - (Math.max(0, Math.min(100, value)) / 100) * (height - padY * 2);
+                        const line = points
+                          .map((point, idx) => `${idx === 0 ? "M" : "L"}${toX(point.t).toFixed(2)} ${toY(point.v).toFixed(2)}`)
+                          .join(" ");
+                        const area = `${line} L${toX(points[points.length - 1].t).toFixed(2)} ${(height - padY).toFixed(2)} L${toX(points[0].t).toFixed(2)} ${(height - padY).toFixed(2)} Z`;
 
-                      return (
-                        <>
-                          <defs>
-                            <linearGradient id="fngFill" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.24" />
-                              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.01" />
-                            </linearGradient>
-                          </defs>
-                          <path d={area} fill="url(#fngFill)" />
-                          <path d={line} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" />
-                        </>
-                      );
-                    })()}
-                  </svg>
+                        return (
+                          <>
+                            <defs>
+                              <linearGradient id="fngFill" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.3" />
+                                <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.04" />
+                              </linearGradient>
+                            </defs>
+                            <rect x={padX} y={toY(100)} width={width - padX * 2} height={toY(75) - toY(100)} fill="#065f46" opacity="0.14" />
+                            <rect x={padX} y={toY(75)} width={width - padX * 2} height={toY(55) - toY(75)} fill="#15803d" opacity="0.12" />
+                            <rect x={padX} y={toY(55)} width={width - padX * 2} height={toY(25) - toY(55)} fill="#ca8a04" opacity="0.11" />
+                            <rect x={padX} y={toY(25)} width={width - padX * 2} height={toY(0) - toY(25)} fill="#be123c" opacity="0.11" />
+                            <path d={area} fill="url(#fngFill)" />
+                            <path d={line} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" />
+                          </>
+                        );
+                      })()}
+                    </svg>
+                    <div className="pointer-events-none absolute left-0 top-0 h-full w-16 bg-[linear-gradient(to_left,rgba(7,11,9,0)_0%,rgba(7,11,9,0.3)_28%,rgba(7,11,9,0.58)_62%,rgba(7,11,9,0.82)_100%)] backdrop-blur-[1px] sm:w-20" />
+                    <div className="pointer-events-none absolute left-0 top-0 flex h-full w-16 flex-col justify-between pl-1.5 text-[10px] ui-soft sm:w-20 sm:pl-2 sm:text-[11px]">
+                      {fngYTicks.map((tick) => (
+                        <span key={`fng-y-${tick}`} className="text-left tabular-nums">
+                          {tick}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div
+                    className="mt-2 grid gap-1 border-t border-zinc-200 pt-2 text-[11px] ui-soft"
+                    style={{ gridTemplateColumns: `repeat(${fngChartTicks.length || 1}, minmax(0, 1fr))` }}
+                  >
+                    {fngChartTicks.map((tickTs, index) => (
+                      <span
+                        key={`${tickTs}-${index}`}
+                        className={`${index === 0 ? "text-left" : index === fngChartTicks.length - 1 ? "text-right" : "text-center"}`}
+                      >
+                        {formatAxisTick(tickTs, fngRange)}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
