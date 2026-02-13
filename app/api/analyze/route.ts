@@ -42,19 +42,29 @@ function toResponseJson(value: unknown): ResponseJson {
 }
 
 function extractHeadline(responseJson: ResponseJson): string | null {
+  const looksLikeResponseId = (value: string) => /^resp_[a-z0-9]+$/i.test(value.trim());
+  const isUsableSentence = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (looksLikeResponseId(trimmed)) return false;
+    if (trimmed.length < 20) return false;
+    if (!/[a-zA-Z]/.test(trimmed)) return false;
+    return true;
+  };
+
   const direct = responseJson.output_text;
   if (Array.isArray(direct)) {
     const joined = direct.join(" ").trim();
-    if (joined) return joined;
-  } else if (typeof direct === "string" && direct.trim()) {
+    if (isUsableSentence(joined)) return joined;
+  } else if (typeof direct === "string" && isUsableSentence(direct)) {
     return direct.trim();
   }
 
   const extractText = (value: unknown): string | null => {
-    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "string" && isUsableSentence(value)) return value.trim();
     if (typeof value === "object" && value != null) {
       const maybeValue = (value as { value?: unknown }).value;
-      if (typeof maybeValue === "string" && maybeValue.trim()) {
+      if (typeof maybeValue === "string" && isUsableSentence(maybeValue)) {
         return maybeValue.trim();
       }
     }
@@ -88,7 +98,11 @@ function extractHeadline(responseJson: ResponseJson): string | null {
   const scan = (node: unknown): string | null => {
     if (typeof node === "string") {
       const trimmed = node.trim();
-      if (trimmed.length >= 8 && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+      if (
+        isUsableSentence(trimmed) &&
+        !trimmed.startsWith("{") &&
+        !trimmed.startsWith("[")
+      ) {
         return trimmed;
       }
       return null;
