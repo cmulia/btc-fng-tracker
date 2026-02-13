@@ -21,6 +21,7 @@ type SnapshotSummary = {
 };
 
 type ResponseJson = {
+  id?: string;
   output_text?: string | string[];
   output?: Array<{
     content?: Array<{
@@ -244,17 +245,21 @@ export async function POST(req: Request) {
   }
 
   const responseJson = toResponseJson(await openAiRes.json());
+  const responseId = typeof responseJson.id === "string" ? responseJson.id : null;
+  let analysisSource: "responses" | "chat_fallback" | "local_fallback" = "responses";
   let headline = extractHeadline(responseJson);
   if (!headline) {
     const chatModel = process.env.OPENAI_CHAT_FALLBACK_MODEL ?? "gpt-4o-mini";
     headline = await requestChatFallback(apiKey, chatModel, payloadSummary);
+    if (headline) analysisSource = "chat_fallback";
   }
   if (!headline) {
     headline = buildLocalFallbackHeadline(payloadSummary);
+    analysisSource = "local_fallback";
   }
 
   return NextResponse.json(
-    { headline, model, ts: Date.now() },
+    { headline, model, responseId, analysisSource, ts: Date.now() },
     { headers: { "Cache-Control": "no-store" } }
   );
 }
