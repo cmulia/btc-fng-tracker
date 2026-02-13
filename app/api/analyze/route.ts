@@ -95,7 +95,6 @@ export async function POST(req: Request) {
       model,
       input,
       max_output_tokens: 80,
-      temperature: 0.4,
     }),
     cache: "no-store",
   });
