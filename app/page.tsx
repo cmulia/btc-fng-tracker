@@ -679,7 +679,7 @@ export default function Home() {
             >
               Demo
             </button>
-            <p className="text-[11px] ui-soft">Account ready: username `chris`</p>
+            <p className="text-[11px] ui-soft"></p>
           </form>
         </div>
       </main>
