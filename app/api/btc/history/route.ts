@@ -33,6 +33,18 @@ const RANGE_CONFIG: Record<
   "10y": { days: 3650, coincapInterval: "d1", fallbackPoints: 180 },
 };
 
+const BINANCE_CONFIG: Record<
+  RangeKey,
+  { interval: "15m" | "1h" | "4h" | "1d" | "1w"; limit: number }
+> = {
+  "24h": { interval: "15m", limit: 96 },
+  "7d": { interval: "1h", limit: 168 },
+  "1m": { interval: "4h", limit: 180 },
+  "1y": { interval: "1d", limit: 365 },
+  "5y": { interval: "1w", limit: 260 },
+  "10y": { interval: "1w", limit: 520 },
+};
+
 function toRangeKey(value: string | null): RangeKey {
   if (!value) return "24h";
   if (value in RANGE_CONFIG) {
@@ -131,6 +143,49 @@ async function fromCoinCap(range: RangeKey): Promise<ProviderResult> {
   }
 }
 
+async function fromBinance(range: RangeKey): Promise<ProviderResult> {
+  try {
+    const now = Date.now();
+    const days = RANGE_CONFIG[range].days;
+    const start = now - days * 24 * 60 * 60 * 1000;
+    const { interval, limit } = BINANCE_CONFIG[range];
+    const params = new URLSearchParams({
+      symbol: "BTCUSDT",
+      interval,
+      limit: String(limit),
+    });
+
+    const data = (await fetchJson(
+      `https://api.binance.com/api/v3/klines?${params.toString()}`
+    )) as Array<[number, string, string, string, string]>;
+
+    const points = cleanPoints(
+      (data ?? [])
+        .map((entry) => ({
+          t: Number(entry?.[0]),
+          p: Number(entry?.[4]), // close
+        }))
+        .filter((point) => point.t >= start && point.t <= now)
+    );
+
+    if (points.length < 2) {
+      return { ok: false, name: "binance", error: "insufficient points" };
+    }
+
+    return {
+      ok: true,
+      name: "binance",
+      data: { range, source: "binance", points, ts: Date.now() },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      name: "binance",
+      error: error instanceof Error ? error.message : "unknown error",
+    };
+  }
+}
+
 async function fromSpotFallback(
   range: RangeKey,
   req: NextRequest
@@ -192,6 +247,7 @@ export async function GET(req: NextRequest) {
   const providers = [
     fromCoinGecko,
     fromCoinCap,
+    fromBinance,
     (selectedRange: RangeKey) => fromSpotFallback(selectedRange, req),
   ];
   const failures: Array<{ provider: string; error: string }> = [];

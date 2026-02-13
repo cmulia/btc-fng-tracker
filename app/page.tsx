@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
 type RangeKey = "24h" | "7d" | "1m" | "1y" | "5y" | "10y";
@@ -25,6 +25,13 @@ type CyclePayload = {
   nextHalving: number;
   btcDominance: number | null;
   dominanceSource: string;
+  ts: number;
+};
+
+type FngHistoryPayload = {
+  range: RangeKey;
+  source: string;
+  points: Array<{ t: number; v: number }>;
   ts: number;
 };
 
@@ -58,6 +65,70 @@ const fetcher = async (url: string) => {
     throw new Error(`Request failed: ${res.status}`);
   }
   return res.json();
+};
+
+function normalizeChartPayload(input: ChartPayload): ChartPayload {
+  const deduped = new Map<number, number>();
+  for (const rawPoint of input?.points ?? []) {
+    const t = Number(rawPoint?.t);
+    const p = Number(rawPoint?.p);
+    if (!Number.isFinite(t) || !Number.isFinite(p)) continue;
+    deduped.set(t, p);
+  }
+
+  let cleanedPoints = [...deduped.entries()]
+    .map((point) => ({
+      t: Number(point[0]),
+      p: Number(point[1]),
+    }))
+    .filter((point) => point.p > 1000 && point.p < 5_000_000)
+    .sort((a, b) => a.t - b.t);
+
+  if (cleanedPoints.length >= 5) {
+    const sortedPrices = [...cleanedPoints].map((point) => point.p).sort((a, b) => a - b);
+    const median = sortedPrices[Math.floor(sortedPrices.length / 2)];
+    const low = median * 0.2;
+    const high = median * 5;
+    cleanedPoints = cleanedPoints.filter((point) => point.p >= low && point.p <= high);
+  }
+
+  if (cleanedPoints.length < 2) {
+    throw new Error("Insufficient chart points");
+  }
+
+  return {
+    ...input,
+    points: cleanedPoints,
+  };
+}
+
+function parseRangeFromUrl(url: string): RangeKey {
+  try {
+    const parsed = new URL(url, "http://localhost");
+    const rangeParam = parsed.searchParams.get("range");
+    if (rangeParam === "24h" || rangeParam === "7d" || rangeParam === "1m" || rangeParam === "1y" || rangeParam === "5y" || rangeParam === "10y") {
+      return rangeParam;
+    }
+  } catch {
+    // ignore and fall back
+  }
+  return "24h";
+}
+
+const chartFetcher = async (url: string): Promise<ChartPayload> => {
+  const range = parseRangeFromUrl(url);
+  try {
+    const data = (await fetcher(url)) as ChartPayload;
+    return normalizeChartPayload(data);
+  } catch {
+    try {
+      const btc = (await fetcher("/api/btc")) as { price?: number };
+      const price = Number(btc?.price);
+      return buildSyntheticChart(range, Number.isFinite(price) ? price : null);
+    } catch {
+      return buildSyntheticChart(range, null);
+    }
+  }
 };
 
 function formatUsd(n: number) {
@@ -235,6 +306,124 @@ function buildChart(points: ChartPoint[]) {
   };
 }
 
+function movingAverage(points: ChartPoint[], period: number) {
+  const result: Array<number | null> = new Array(points.length).fill(null);
+  if (points.length === 0 || period <= 0) return result;
+
+  let rollingSum = 0;
+  for (let idx = 0; idx < points.length; idx += 1) {
+    rollingSum += points[idx].p;
+    if (idx >= period) rollingSum -= points[idx - period].p;
+    if (idx >= period - 1) {
+      result[idx] = rollingSum / period;
+    }
+  }
+  return result;
+}
+
+function buildPathFromSeries(
+  values: Array<number | null>,
+  shape: ReturnType<typeof buildChart>
+) {
+  if (!shape) return null;
+  const minY = shape.minY;
+  const maxY = shape.maxY;
+  const yRange = Math.max(1, maxY - minY);
+  const toY = (value: number) =>
+    shape.height - shape.padY - ((value - minY) / yRange) * (shape.height - shape.padY * 2);
+
+  let path = "";
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const value = values[idx];
+    if (value == null || !shape.coords[idx]) continue;
+    const cmd = path.length === 0 ? "M" : " L";
+    path += `${cmd}${shape.coords[idx].x.toFixed(2)} ${toY(value).toFixed(2)}`;
+  }
+  return path || null;
+}
+
+function mapFngSeriesToChart(points: ChartPoint[], fngPoints: Array<{ t: number; v: number }>) {
+  if (points.length === 0 || fngPoints.length === 0) return [] as Array<number | null>;
+  const result: Array<number | null> = new Array(points.length).fill(null);
+  let j = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    while (j < fngPoints.length - 1 && fngPoints[j + 1].t <= points[i].t) {
+      j += 1;
+    }
+    result[i] = fngPoints[j]?.v ?? null;
+  }
+  return result;
+}
+
+function buildOscillatorPath(
+  values: Array<number | null>,
+  shape: ReturnType<typeof buildChart>,
+  min = 0,
+  max = 100
+) {
+  if (!shape) return null;
+  const range = Math.max(1, max - min);
+  const toY = (value: number) =>
+    shape.height - shape.padY - ((value - min) / range) * (shape.height - shape.padY * 2);
+  let path = "";
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const value = values[idx];
+    if (value == null || !shape.coords[idx]) continue;
+    const cmd = path.length === 0 ? "M" : " L";
+    path += `${cmd}${shape.coords[idx].x.toFixed(2)} ${toY(value).toFixed(2)}`;
+  }
+  return path || null;
+}
+
+function getRangeDays(range: RangeKey) {
+  if (range === "24h") return 1;
+  if (range === "7d") return 7;
+  if (range === "1m") return 30;
+  if (range === "1y") return 365;
+  if (range === "5y") return 365 * 5;
+  return 365 * 10;
+}
+
+function buildSyntheticChart(range: RangeKey, price: number | null): ChartPayload {
+  const now = Date.now();
+  const days = getRangeDays(range);
+  const pointsCount = range === "24h" ? 48 : range === "7d" ? 84 : 120;
+  const start = now - days * 24 * 60 * 60 * 1000;
+  const step = Math.max(1, Math.floor((now - start) / (pointsCount - 1)));
+  const base = price ?? 60000;
+  const points: ChartPoint[] = Array.from({ length: pointsCount }, (_, i) => {
+    const wobble = Math.sin(i / 5) * base * 0.0025;
+    return {
+      t: start + i * step,
+      p: base + wobble,
+    };
+  });
+
+  return {
+    range,
+    source: "synthetic",
+    points,
+    ts: now,
+  };
+}
+
+function buildSyntheticFng(range: RangeKey): FngHistoryPayload {
+  const now = Date.now();
+  const days = getRangeDays(range);
+  const pointsCount = range === "24h" ? 48 : range === "7d" ? 84 : 120;
+  const start = now - days * 24 * 60 * 60 * 1000;
+  const step = Math.max(1, Math.floor((now - start) / (pointsCount - 1)));
+  return {
+    range,
+    source: "synthetic",
+    ts: now,
+    points: Array.from({ length: pointsCount }, (_, i) => ({
+      t: start + i * step,
+      v: 50,
+    })),
+  };
+}
+
 export default function Home() {
   const [authChecked, setAuthChecked] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -256,7 +445,11 @@ export default function Home() {
   const [isTypingAiHeadline, setIsTypingAiHeadline] = useState(false);
   const [myCoinAmount, setMyCoinAmount] = useState<string>(() => loadMyCoinField("amount"));
   const [myCoinEntry, setMyCoinEntry] = useState<string>(() => loadMyCoinField("entry"));
+  const isDarkMode = true;
+  const [pricePulse, setPricePulse] = useState<"up" | "down" | null>(null);
+  const [rangeChartCache, setRangeChartCache] = useState<Partial<Record<RangeKey, ChartPayload>>>({});
   const canAccessDashboard = isAuthenticated || isDemoMode;
+  const previousPriceRef = useRef<number | null>(null);
 
   const btc = useSWR(canAccessDashboard ? "/api/btc" : null, fetcher, { refreshInterval: 10_000 });
   const fng = useSWR(canAccessDashboard ? "/api/fng" : null, fetcher, { refreshInterval: 1_800_000 });
@@ -266,9 +459,20 @@ export default function Home() {
   const cycle = useSWR<CyclePayload>(canAccessDashboard ? "/api/btc/cycle" : null, fetcher, {
     refreshInterval: 900_000,
   });
-  const chart = useSWR<ChartPayload>(canAccessDashboard ? `/api/btc/history?range=${range}` : null, fetcher, {
-    refreshInterval: range === "24h" || range === "7d" ? 60_000 : 600_000,
-  });
+  const chart = useSWR<ChartPayload>(
+    canAccessDashboard ? `/api/btc/history?range=${range}` : null,
+    chartFetcher,
+    {
+      refreshInterval: range === "24h" || range === "7d" ? 60_000 : 600_000,
+      keepPreviousData: true,
+      revalidateOnFocus: false,
+    }
+  );
+  const fngHistory = useSWR<FngHistoryPayload>(
+    canAccessDashboard ? `/api/fng/history?range=${range}` : null,
+    fetcher,
+    { refreshInterval: 1_800_000 }
+  );
 
   const price = btc.data?.price as number | null;
   const change24h = btc.data?.change24h as number | null;
@@ -291,12 +495,20 @@ export default function Home() {
 
   const moodTone =
     fngValue == null
-      ? "from-zinc-200 to-zinc-100 text-zinc-700"
+      ? "from-zinc-800 to-zinc-700 text-zinc-100"
       : fngValue >= 60
-        ? "from-emerald-200 to-lime-100 text-emerald-950"
-        : fngValue >= 40
-          ? "from-amber-100 to-yellow-50 text-amber-950"
-          : "from-rose-200 to-orange-100 text-rose-950";
+        ? "from-emerald-500/35 to-lime-400/25 text-emerald-100"
+        : fngValue >= 45
+          ? "from-amber-500/35 to-yellow-400/25 text-amber-100"
+          : "from-rose-600/40 to-red-500/30 text-rose-100";
+  const sentimentLabelTone =
+    fngValue == null
+      ? "text-zinc-400"
+      : fngValue < 45
+        ? "text-rose-400"
+        : fngValue >= 60
+          ? "text-emerald-400"
+          : "text-amber-300";
 
   const changeTone =
     effective24hChange == null
@@ -308,7 +520,30 @@ export default function Home() {
   const btcSource = btc.data?.source ?? "—";
   const fngSource = fng.data?.source ?? "—";
 
-  const chartPoints = chart.data?.points;
+  useEffect(() => {
+    if (!canAccessDashboard) {
+      setRangeChartCache({});
+      return;
+    }
+    if (
+      chart.data?.points &&
+      chart.data.points.length >= 2 &&
+      chart.data.source !== "synthetic"
+    ) {
+      setRangeChartCache((prev) => ({
+        ...prev,
+        [range]: chart.data,
+      }));
+    }
+  }, [canAccessDashboard, chart.data, range]);
+
+  const syntheticChart = useMemo(() => buildSyntheticChart(range, price), [price, range]);
+  const cachedChartForRange = rangeChartCache[range] ?? null;
+  const displayChart =
+    chart.data?.points && chart.data.points.length >= 2
+      ? chart.data
+      : cachedChartForRange ?? syntheticChart;
+  const chartPoints = displayChart?.points;
   const chartShape = useMemo(() => buildChart(chartPoints ?? []), [chartPoints]);
   const firstPrice = chartPoints?.[0]?.p ?? null;
   const lastPrice = chartPoints?.[chartPoints.length - 1]?.p ?? null;
@@ -403,7 +638,7 @@ export default function Home() {
       : dominance >= 55
         ? "value-up"
         : dominance <= 45
-          ? "value-down"
+        ? "value-down"
           : "text-zinc-700";
   const myCoinAmountNum = Number(myCoinAmount);
   const myCoinEntryNum = Number(myCoinEntry);
@@ -441,6 +676,60 @@ export default function Home() {
     const step = (chartEndTs - chartStartTs) / (tickCount - 1);
     return Array.from({ length: tickCount }, (_, idx) => chartStartTs + step * idx);
   }, [chartEndTs, chartStartTs, range]);
+  const ma50Series = useMemo(() => movingAverage(chartPoints ?? [], 50), [chartPoints]);
+  const ma200Series = useMemo(() => movingAverage(chartPoints ?? [], 200), [chartPoints]);
+  const ma50Path = useMemo(() => buildPathFromSeries(ma50Series, chartShape), [ma50Series, chartShape]);
+  const ma200Path = useMemo(() => buildPathFromSeries(ma200Series, chartShape), [ma200Series, chartShape]);
+  const latestMA50 = useMemo(
+    () => [...ma50Series].reverse().find((value) => value != null) ?? null,
+    [ma50Series]
+  );
+  const latestMA200 = useMemo(
+    () => [...ma200Series].reverse().find((value) => value != null) ?? null,
+    [ma200Series]
+  );
+  const crossSignal = useMemo(() => {
+    if (!chartPoints || chartPoints.length < 2) return null as null | { type: "golden" | "death"; t: number };
+    for (let idx = chartPoints.length - 1; idx > 0; idx -= 1) {
+      const prev50 = ma50Series[idx - 1];
+      const prev200 = ma200Series[idx - 1];
+      const curr50 = ma50Series[idx];
+      const curr200 = ma200Series[idx];
+      if (prev50 == null || prev200 == null || curr50 == null || curr200 == null) continue;
+      if (prev50 <= prev200 && curr50 > curr200) {
+        return { type: "golden" as const, t: chartPoints[idx].t };
+      }
+      if (prev50 >= prev200 && curr50 < curr200) {
+        return { type: "death" as const, t: chartPoints[idx].t };
+      }
+    }
+    return null;
+  }, [chartPoints, ma200Series, ma50Series]);
+  const crossSignalLabel =
+    crossSignal == null
+      ? "No cross"
+      : crossSignal.type === "golden"
+        ? "Golden Cross"
+        : "Death Cross";
+  const crossSignalTone =
+    crossSignal == null
+      ? "text-zinc-700"
+      : crossSignal.type === "golden"
+        ? "value-up"
+        : "value-down";
+  const syntheticFngHistory = useMemo(() => buildSyntheticFng(range), [range]);
+  const displayFngHistory =
+    fngHistory.data?.points && fngHistory.data.points.length >= 2
+      ? fngHistory.data
+      : syntheticFngHistory;
+  const fngOverlayValues = useMemo(
+    () => mapFngSeriesToChart(chartPoints ?? [], displayFngHistory.points),
+    [chartPoints, displayFngHistory.points]
+  );
+  const fngOverlayPath = useMemo(
+    () => buildOscillatorPath(fngOverlayValues, chartShape, 0, 100),
+    [chartShape, fngOverlayValues]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -526,6 +815,24 @@ export default function Home() {
 
     return () => clearInterval(timer);
   }, [aiInsight, demoHeadline, isDemoMode]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.add("dark");
+  }, []);
+
+  useEffect(() => {
+    if (price == null) return;
+    const previous = previousPriceRef.current;
+    if (previous != null && price !== previous) {
+      setPricePulse(price > previous ? "up" : "down");
+      const timer = setTimeout(() => setPricePulse(null), 650);
+      previousPriceRef.current = price;
+      return () => clearTimeout(timer);
+    }
+    previousPriceRef.current = price;
+    return;
+  }, [price]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -622,7 +929,13 @@ export default function Home() {
 
   if (!authChecked) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] px-4 py-6 text-zinc-950 sm:px-6 lg:px-8">
+      <main
+        className={`min-h-screen px-4 py-6 transition-colors duration-300 sm:px-6 lg:px-8 ${
+          isDarkMode
+            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+            : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
+        }`}
+      >
         <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
           <div className="ui-card w-full p-5 text-center">
             <p className="text-sm ui-soft">Checking session...</p>
@@ -634,7 +947,13 @@ export default function Home() {
 
   if (!canAccessDashboard) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] px-4 py-6 text-zinc-950 sm:px-6 lg:px-8">
+      <main
+        className={`min-h-screen px-4 py-6 transition-colors duration-300 sm:px-6 lg:px-8 ${
+          isDarkMode
+            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+            : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
+        }`}
+      >
         <div className="mx-auto flex min-h-[78vh] max-w-md items-center justify-center">
           <form onSubmit={handleLogin} className="ui-card w-full space-y-4 p-5 sm:p-6">
             <div>
@@ -687,7 +1006,13 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] px-4 py-6 text-zinc-950 sm:px-6 lg:px-8">
+    <main
+      className={`min-h-screen px-4 py-6 text-zinc-950 transition-colors duration-300 sm:px-6 lg:px-8 ${
+        isDarkMode
+          ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+          : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
+      }`}
+    >
       <div className="mx-auto w-full max-w-7xl lg:grid lg:grid-cols-[220px_1fr] lg:gap-4">
         <aside className="hidden lg:block">
           <div className="ui-card sticky top-4 p-3 card-enter" style={{ "--stagger": "40ms" } as CSSProperties}>
@@ -754,7 +1079,13 @@ export default function Home() {
               </div>
             </div>
             <div className="mt-2 text-xs ui-soft">Updated {lastUpdated}</div>
-            <div className="mt-4 rounded-xl border border-teal-100 bg-gradient-to-r from-teal-50 to-lime-50 px-4 py-3">
+            <div
+              className={`mt-4 rounded-xl border px-4 py-3 ${
+                isDarkMode
+                  ? "border-emerald-500/30 bg-[linear-gradient(115deg,rgba(11,24,17,0.95),rgba(14,34,22,0.9))]"
+                  : "border-teal-100 bg-gradient-to-r from-teal-50 to-lime-50"
+              }`}
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-700">
                   AI Price Reflection
@@ -763,7 +1094,11 @@ export default function Home() {
                   type="button"
                   onClick={handleAnalyze}
                   disabled={aiIsAnalyzing || isDemoMode}
-                  className={`rounded-lg border border-teal-200 bg-white px-3 py-1 text-xs font-semibold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-70 ${
+                  className={`rounded-lg border px-3 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-70 ${
+                    isDarkMode
+                      ? "border-emerald-500/40 bg-zinc-900 text-white hover:bg-zinc-800"
+                      : "border-teal-200 bg-white text-teal-700 hover:bg-teal-50"
+                  } ${
                     aiIsAnalyzing ? "analyze-button-loading" : ""
                   }`}
                 >
@@ -828,7 +1163,7 @@ export default function Home() {
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide ui-soft">BTC Metrics</p>
                   <p className="text-sm ui-soft">BTC Price</p>
-                  <p className={`mt-2 text-4xl font-semibold tracking-tight sm:text-5xl ${btc.isValidating ? "data-refreshing" : ""}`}>
+                  <p className={`mt-2 text-4xl font-semibold tracking-tight transition-all duration-500 sm:text-5xl ${btc.isValidating ? "data-refreshing" : ""} ${pricePulse === "up" ? "price-pulse-up" : ""} ${pricePulse === "down" ? "price-pulse-down" : ""}`}>
                     {price == null ? "Loading..." : formatUsd(price)}
                   </p>
                   <p className={`mt-2 text-sm font-medium ${changeTone}`}>
@@ -840,29 +1175,6 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="mt-5 rounded-2xl border border-zinc-200/80 bg-gradient-to-r from-emerald-50/60 via-white to-lime-50/50 p-4">
-                <div className="flex items-center justify-between text-xs ui-soft">
-                  <span>24H Momentum</span>
-                  <span>
-                    {change24h != null
-                      ? "Realtime delta"
-                      : fallback24hChange != null
-                        ? "Chart-derived delta"
-                        : "Delta unavailable"}
-                  </span>
-                </div>
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-lime-400 transition-all duration-700"
-                    style={{
-                      width:
-                        effective24hChange == null
-                          ? "20%"
-                          : `${Math.min(100, Math.max(8, 50 + effective24hChange * 5))}%`,
-                    }}
-                  />
-                </div>
-              </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
                   <p className="text-xs ui-soft">Range Volatility</p>
@@ -899,7 +1211,7 @@ export default function Home() {
                   <p className={`mt-2 text-4xl font-semibold tracking-tight sm:text-5xl ${fng.isValidating ? "data-refreshing" : ""}`}>
                     {fngValue == null ? "Loading..." : fngValue}
                   </p>
-                  <p className="mt-2 text-sm ui-soft">{fngLabel ?? "Classification unavailable"}</p>
+                  <p className={`mt-2 text-sm ${sentimentLabelTone}`}>{fngLabel ?? "Classification unavailable"}</p>
                 </div>
                 <div className={`rounded-2xl bg-gradient-to-br px-3 py-2 text-xs font-medium shadow-inner ${moodTone}`}>
                   Regime
@@ -1015,7 +1327,10 @@ export default function Home() {
                 <p className="text-sm ui-soft">BTC Price Chart</p>
                 <p className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">Historical performance</p>
               </div>
-              <p className="text-xs ui-soft">Source: {chart.data?.source ?? "—"}</p>
+              <p className="text-xs ui-soft">
+                Source: {displayChart?.source ?? "—"}
+                {chart.error && cachedChartForRange ? " (showing previous valid data)" : ""}
+              </p>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -1026,6 +1341,18 @@ export default function Home() {
               <span className="status-badge">
                 <span className="status-dot status-dot-ai" />
                 Area trend
+              </span>
+              <span className="status-badge">
+                <span className="status-dot" style={{ background: "#2563eb" }} />
+                50 MA
+              </span>
+              <span className="status-badge">
+                <span className="status-dot" style={{ background: "#9333ea" }} />
+                200 MA
+              </span>
+              <span className="status-badge">
+                <span className="status-dot" style={{ background: "#f59e0b" }} />
+                F&G overlay
               </span>
               <span className="status-badge">
                 <span className="status-dot status-dot-fallback" />
@@ -1056,7 +1383,7 @@ export default function Home() {
               })}
             </div>
 
-            <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+            <div className="mt-4 grid gap-3 text-sm sm:grid-cols-5">
               <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
                 <p className="ui-soft">Range Return</p>
                 <p className={`mt-1 font-semibold ${rangeTone}`}>{formatSignedPercent(rangePerformance)}</p>
@@ -1068,6 +1395,18 @@ export default function Home() {
               <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
                 <p className="ui-soft">Range Low</p>
                 <p className="mt-1 font-semibold text-zinc-900">{chartShape ? formatUsd(chartShape.minY) : "—"}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+                <p className="ui-soft">50 / 200 MA</p>
+                <p className="mt-1 font-semibold text-zinc-900">
+                  {latestMA50 == null || latestMA200 == null
+                    ? "—"
+                    : `${formatUsd(latestMA50)} / ${formatUsd(latestMA200)}`}
+                </p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+                <p className="ui-soft">Cross Alert</p>
+                <p className={`mt-1 font-semibold ${crossSignalTone}`}>{crossSignalLabel}</p>
               </div>
             </div>
             <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -1083,13 +1422,18 @@ export default function Home() {
               </div>
             </div>
 
-            <div className={`mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-3 sm:p-4 ${chart.isValidating ? "data-refreshing" : ""}`}>
-              {chart.isLoading && <p className="py-14 text-center text-sm ui-soft">Loading chart...</p>}
-              {!chart.isLoading && chart.error && (
+            <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-3 sm:p-4">
+              {chart.isLoading && !chartShape && <p className="py-14 text-center text-sm ui-soft">Loading chart...</p>}
+              {!chartShape && !chart.isLoading && (
                 <p className="py-14 text-center text-sm text-rose-700">Failed to load chart data.</p>
               )}
-              {!chart.isLoading && !chart.error && chartShape && (
+              {chartShape && (
                 <>
+                  {chart.error && (
+                    <p className="mb-2 text-xs text-amber-700">
+                      Live update failed; showing last valid chart data.
+                    </p>
+                  )}
                   <div
                     className="relative h-[210px] w-full"
                     onMouseLeave={() => setHoverIndex(null)}
@@ -1139,6 +1483,37 @@ export default function Home() {
                       })}
                       <path d={chartShape.area} fill="url(#chartFill)" />
                       <path d={chartShape.path} fill="none" stroke="#0f766e" strokeWidth="3" strokeLinecap="round" />
+                      {ma50Path && (
+                        <path
+                          d={ma50Path}
+                          fill="none"
+                          stroke="#2563eb"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          opacity="0.9"
+                        />
+                      )}
+                      {ma200Path && (
+                        <path
+                          d={ma200Path}
+                          fill="none"
+                          stroke="#9333ea"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          opacity="0.85"
+                        />
+                      )}
+                      {fngOverlayPath && (
+                        <path
+                          d={fngOverlayPath}
+                          fill="none"
+                          stroke="#f59e0b"
+                          strokeWidth="1.8"
+                          strokeDasharray="5 4"
+                          strokeLinecap="round"
+                          opacity="0.85"
+                        />
+                      )}
                       {activeCoord && (
                         <>
                           <line
@@ -1169,14 +1544,18 @@ export default function Home() {
                     </svg>
                     {activePoint && activeCoord && (
                       <div
-                        className="pointer-events-none absolute z-10 rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
+                        className={`pointer-events-none absolute z-10 rounded-xl border px-3 py-2 text-xs shadow-lg backdrop-blur ${
+                          isDarkMode
+                            ? "border-emerald-900/60 bg-zinc-950/95 text-zinc-100"
+                            : "border-zinc-200 bg-white/95 text-zinc-900"
+                        }`}
                         style={{
                           left: `${(activeCoord.x / chartShape.width) * 100}%`,
                           top: `${(activeCoord.y / chartShape.height) * 100}%`,
                           transform: "translate(-50%, -120%)",
                         }}
                       >
-                        <div className="font-semibold text-zinc-900">{formatUsd(activePoint.p)}</div>
+                        <div className="font-semibold">{formatUsd(activePoint.p)}</div>
                         <div className="mt-0.5 ui-soft">{formatChartDate(activePoint.t, range)}</div>
                         <div className={`mt-0.5 ${activeDeltaTone}`}>
                           {activePointDelta == null ? "N/A" : formatSignedPercent(activePointDelta)}
@@ -1198,6 +1577,55 @@ export default function Home() {
                     ))}
                   </div>
                 </>
+              )}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-3 sm:p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-zinc-900">Historical Fear & Greed Chart</p>
+                <p className="text-xs ui-soft">Source: {displayFngHistory.source ?? "—"}</p>
+              </div>
+              {fngHistory.isLoading && <p className="py-10 text-center text-sm ui-soft">Loading F&G history...</p>}
+              {!fngHistory.isLoading && (
+                <div className="mt-3 h-[130px] w-full">
+                  {fngHistory.error && (
+                    <p className="mb-2 text-xs text-amber-700">
+                      Live update failed; showing fallback F&G data.
+                    </p>
+                  )}
+                  <svg viewBox="0 0 1000 130" className="h-full w-full">
+                    {(() => {
+                      const points = displayFngHistory.points ?? [];
+                      if (points.length < 2) return null;
+                      const minX = points[0].t;
+                      const maxX = points[points.length - 1].t;
+                      const xRange = Math.max(1, maxX - minX);
+                      const padX = 24;
+                      const padY = 14;
+                      const toX = (value: number) =>
+                        padX + ((value - minX) / xRange) * (1000 - padX * 2);
+                      const toY = (value: number) =>
+                        130 - padY - (Math.max(0, Math.min(100, value)) / 100) * (130 - padY * 2);
+                      const line = points
+                        .map((point, idx) => `${idx === 0 ? "M" : "L"}${toX(point.t).toFixed(2)} ${toY(point.v).toFixed(2)}`)
+                        .join(" ");
+                      const area = `${line} L${toX(points[points.length - 1].t).toFixed(2)} ${(130 - padY).toFixed(2)} L${toX(points[0].t).toFixed(2)} ${(130 - padY).toFixed(2)} Z`;
+
+                      return (
+                        <>
+                          <defs>
+                            <linearGradient id="fngFill" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.24" />
+                              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.01" />
+                            </linearGradient>
+                          </defs>
+                          <path d={area} fill="url(#fngFill)" />
+                          <path d={line} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" />
+                        </>
+                      );
+                    })()}
+                  </svg>
+                </div>
               )}
             </div>
           </section>
