@@ -639,7 +639,7 @@ export default function Home() {
           <form onSubmit={handleLogin} className="ui-card w-full space-y-4 p-5 sm:p-6">
             <div>
               <p className="text-lg font-semibold text-zinc-900">Login</p>
-              <p className="text-xs ui-soft">No signup enabled. Use your existing account.</p>
+              <p className="text-xs ui-soft"></p>
             </div>
             <label className="block text-xs ui-soft">
               Username
