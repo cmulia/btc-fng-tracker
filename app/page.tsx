@@ -397,6 +397,9 @@ function buildSyntheticFng(range: RangeKey): FngHistoryPayload {
 }
 
 export default function Home() {
+  const [showSplash, setShowSplash] = useState(true);
+  const [isSplashFading, setIsSplashFading] = useState(false);
+  const [isPageVisible, setIsPageVisible] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
@@ -446,6 +449,7 @@ export default function Home() {
     fetcher,
     { refreshInterval: 1_800_000 }
   );
+  const isRefreshing = btc.isValidating || fng.isValidating || chart.isValidating || cycle.isValidating;
 
   const price = btc.data?.price as number | null;
   const change24h = btc.data?.change24h as number | null;
@@ -740,6 +744,24 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const fadeTimer = setTimeout(() => setIsSplashFading(true), 3000);
+    const hideTimer = setTimeout(() => setShowSplash(false), 3600);
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(hideTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (showSplash) {
+      setIsPageVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setIsPageVisible(true), 40);
+    return () => clearTimeout(timer);
+  }, [showSplash]);
+
+  useEffect(() => {
     let cancelled = false;
     const loadSession = async () => {
       try {
@@ -935,12 +957,34 @@ export default function Home() {
     }
   };
 
+  if (showSplash) {
+    return (
+      <main
+        className={`min-h-screen bg-[radial-gradient(circle_at_18%_12%,rgba(180,83,9,0.9),rgba(41,22,8,0.96)_42%,rgba(18,11,2,1)_100%)] px-4 py-6 text-amber-100 transition-opacity duration-600 sm:px-6 lg:px-8 ${
+          isSplashFading ? "opacity-0" : "opacity-100"
+        }`}
+      >
+        <div className="mx-auto flex min-h-[82vh] max-w-2xl flex-col items-center justify-center text-center">
+          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-amber-300/90">BTC Tracker</p>
+          <h1 className="mt-4 text-6xl font-black tracking-tight text-amber-200 sm:text-7xl">Momentum</h1>
+          <p className="mt-3 text-sm text-amber-100/85 sm:text-base">Reading price, sentiment and cycle signals...</p>
+          <div className="mt-7 inline-flex items-center gap-3 rounded-full border border-amber-500/35 bg-black/35 px-4 py-2 text-sm font-semibold text-amber-200">
+            <span className="spinner-wheel h-5 w-5 rounded-full border-2 border-amber-200 border-t-transparent border-r-transparent" />
+            Loading dashboard
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   if (!authChecked) {
     return (
       <main
-        className={`min-h-screen px-4 py-6 transition-colors duration-300 sm:px-6 lg:px-8 ${
+        className={`min-h-screen px-4 py-6 transition-all duration-700 sm:px-6 lg:px-8 ${
+          isPageVisible ? "opacity-100" : "opacity-0"
+        } ${
           isDarkMode
-            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(180,83,9,0.9),rgba(41,22,8,0.96)_42%,rgba(18,11,2,1)_100%)] text-amber-100"
             : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
         }`}
       >
@@ -956,9 +1000,11 @@ export default function Home() {
   if (!canAccessDashboard) {
     return (
       <main
-        className={`min-h-screen px-4 py-6 transition-colors duration-300 sm:px-6 lg:px-8 ${
+        className={`relative min-h-screen px-4 py-6 transition-all duration-700 sm:px-6 lg:px-8 ${
+          isPageVisible ? "opacity-100" : "opacity-0"
+        } ${
           isDarkMode
-            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+            ? "bg-[radial-gradient(circle_at_18%_12%,rgba(180,83,9,0.9),rgba(41,22,8,0.96)_42%,rgba(18,11,2,1)_100%)] text-amber-100"
             : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
         }`}
       >
@@ -975,7 +1021,7 @@ export default function Home() {
                 value={loginUsername}
                 onChange={(event) => setLoginUsername(event.target.value)}
                 autoComplete="username"
-                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-teal-400"
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-amber-500"
               />
             </label>
             <label className="block text-xs ui-soft">
@@ -985,14 +1031,14 @@ export default function Home() {
                 value={loginPassword}
                 onChange={(event) => setLoginPassword(event.target.value)}
                 autoComplete="current-password"
-                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-teal-400"
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-amber-500"
               />
             </label>
             {loginError && <p className="text-xs text-rose-700">{loginError}</p>}
             <button
               type="submit"
               disabled={loginIsSubmitting}
-              className="w-full rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loginIsSubmitting ? "Logging in..." : "Login"}
             </button>
@@ -1009,15 +1055,27 @@ export default function Home() {
             <p className="text-[11px] ui-soft"></p>
           </form>
         </div>
+        <div className="pointer-events-none absolute bottom-4 right-4 rounded-2xl border border-amber-500/35 bg-black/35 px-4 py-3 text-right backdrop-blur sm:bottom-6 sm:right-6">
+          <div className="inline-flex items-center gap-2">
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-400 text-sm font-black text-zinc-950">
+              M
+            </span>
+            <p className="text-base font-black tracking-tight text-amber-200">Momentum</p>
+          </div>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-amber-300/85">Bitcoin Signal Desk</p>
+          <p className="mt-1 text-xs text-amber-100/75">Price, sentiment and cycle intelligence.</p>
+        </div>
       </main>
     );
   }
 
   return (
     <main
-      className={`min-h-screen px-4 py-6 text-zinc-950 transition-colors duration-300 sm:px-6 lg:px-8 ${
+      className={`min-h-screen px-4 py-6 text-zinc-950 transition-all duration-700 sm:px-6 lg:px-8 ${
+        isPageVisible ? "opacity-100" : "opacity-0"
+      } ${
         isDarkMode
-          ? "bg-[radial-gradient(circle_at_18%_12%,rgba(24,44,33,0.94),rgba(12,19,15,0.96)_42%,rgba(7,11,9,1)_100%)] text-zinc-100"
+          ? "bg-[radial-gradient(circle_at_18%_12%,rgba(180,83,9,0.9),rgba(41,22,8,0.96)_42%,rgba(18,11,2,1)_100%)] text-amber-100"
           : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
       }`}
     >
@@ -1041,10 +1099,10 @@ export default function Home() {
                     event.preventDefault();
                     handleNavClick(item.id as SectionKey);
                   }}
-                  className={`flex items-center justify-between rounded-lg px-2 py-2 text-sm transition ${
+                    className={`flex items-center justify-between rounded-lg px-2 py-2 text-sm transition ${
                     activeSection === item.id
-                      ? "bg-zinc-900 text-white"
-                      : "text-zinc-700 hover:bg-white"
+                      ? "bg-amber-500 text-zinc-950"
+                      : "text-amber-100/90 hover:bg-amber-300/10"
                   }`}
                 >
                   <span>{item.label}</span>
@@ -1059,11 +1117,17 @@ export default function Home() {
           <header id="overview" className="ui-card card-enter scroll-mt-4 p-4 sm:p-5" style={{ "--stagger": "80ms" } as CSSProperties}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-base font-semibold text-zinc-900">
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-amber-300/90">Momentum</p>
+                <h1 className="mt-1 text-4xl font-black tracking-tight text-amber-100 sm:text-5xl">Momentum</h1>
+                <p className="mt-1 text-base font-semibold text-amber-50">
                   {isDemoMode ? "Welcome, please have a look around" : "Welcome, Chris."}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <span className="status-badge">
+                  <span className={`status-dot ${isRefreshing ? "status-dot-live" : ""}`} />
+                  {isRefreshing ? "Refreshing" : "Idle"}
+                </span>
                 <span className="status-badge">
                   <span className="status-dot status-dot-live" />
                   Live
@@ -1080,7 +1144,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={handleLogout}
-                  className="rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
+                  className="rounded-full border border-amber-500/45 bg-amber-300/10 px-3 py-1 text-xs font-semibold text-amber-100 transition hover:bg-amber-300/20"
                 >
                   {isDemoMode ? "Exit demo" : "Logout"}
                 </button>
@@ -1090,12 +1154,12 @@ export default function Home() {
             <div
               className={`mt-4 rounded-xl border px-4 py-3 ${
                 isDarkMode
-                  ? "border-emerald-500/30 bg-[linear-gradient(115deg,rgba(11,24,17,0.95),rgba(14,34,22,0.9))]"
-                  : "border-teal-100 bg-gradient-to-r from-teal-50 to-lime-50"
+                  ? "border-amber-500/35 bg-[linear-gradient(115deg,rgba(57,35,7,0.92),rgba(33,18,5,0.95))]"
+                  : "border-amber-200 bg-gradient-to-r from-amber-50 to-yellow-50"
               }`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-300">
                   AI Price Reflection
                 </p>
                 <button
@@ -1104,8 +1168,8 @@ export default function Home() {
                   disabled={aiIsAnalyzing || isDemoMode}
                   className={`rounded-lg border px-3 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-70 ${
                     isDarkMode
-                      ? "border-emerald-500/40 bg-zinc-900 text-white hover:bg-zinc-800"
-                      : "border-teal-200 bg-white text-teal-700 hover:bg-teal-50"
+                      ? "border-amber-500/45 bg-amber-500 text-zinc-950 hover:bg-amber-400"
+                      : "border-amber-200 bg-white text-amber-700 hover:bg-amber-50"
                   } ${
                     aiIsAnalyzing ? "analyze-button-loading" : ""
                   }`}
@@ -1126,11 +1190,11 @@ export default function Home() {
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-2xl font-semibold leading-snug text-zinc-900 sm:text-3xl">
+              <p className="mt-1 text-2xl font-semibold leading-snug text-amber-100 sm:text-3xl">
                 {displayedAiHeadline}
                 {isTypingAiHeadline && <span className="typing-caret" aria-hidden />}
               </p>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-600">
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-100/70">
                 <span>Last AI run: {aiUpdatedText}</span>
                 {isDemoMode ? (
                   <span>AI analysis disabled in demo</span>
@@ -1231,7 +1295,7 @@ export default function Home() {
                   <div
                     className="h-full w-full rounded-full"
                     style={{
-                      background: `conic-gradient(#0f766e ${sentimentGaugeDeg}deg, #e4e4e7 ${sentimentGaugeDeg}deg)`,
+                      background: `conic-gradient(#f59e0b ${sentimentGaugeDeg}deg, #e4e4e7 ${sentimentGaugeDeg}deg)`,
                     }}
                   />
                   <div className="absolute inset-2 flex items-center justify-center rounded-full bg-white text-center">
@@ -1264,7 +1328,7 @@ export default function Home() {
                 </div>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-200">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-teal-500 to-emerald-500 transition-all duration-700"
+                    className="h-full rounded-full bg-gradient-to-r from-amber-400 to-yellow-400 transition-all duration-700"
                     style={{ width: `${sentimentStrength ?? 0}%` }}
                   />
                 </div>
@@ -1311,7 +1375,7 @@ export default function Home() {
                 </p>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-200">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-teal-500 to-lime-400 transition-all duration-700"
+                    className="h-full rounded-full bg-gradient-to-r from-amber-400 to-yellow-400 transition-all duration-700"
                     style={{ width: `${cycleProgress ?? 0}%` }}
                   />
                 </div>
@@ -1351,11 +1415,11 @@ export default function Home() {
                 Area trend
               </span>
               <span className="status-badge">
-                <span className="status-dot" style={{ background: "#2563eb" }} />
+                <span className="status-dot" style={{ background: "#fbbf24" }} />
                 50 MA
               </span>
               <span className="status-badge">
-                <span className="status-dot" style={{ background: "#9333ea" }} />
+                <span className="status-dot" style={{ background: "#d97706" }} />
                 200 MA
               </span>
               <span className="status-badge">
@@ -1457,8 +1521,8 @@ export default function Home() {
                     >
                       <defs>
                         <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#0f766e" stopOpacity="0.24" />
-                          <stop offset="100%" stopColor="#0f766e" stopOpacity="0.01" />
+                          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.24" />
+                          <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.01" />
                         </linearGradient>
                       </defs>
                       {Array.from({ length: 4 }, (_, i) => {
@@ -1478,12 +1542,12 @@ export default function Home() {
                         );
                       })}
                       <path d={chartShape.area} fill="url(#chartFill)" />
-                      <path d={chartShape.path} fill="none" stroke="#0f766e" strokeWidth="3" strokeLinecap="round" />
+                      <path d={chartShape.path} fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
                       {ma50Path && (
                         <path
                           d={ma50Path}
                           fill="none"
-                          stroke="#2563eb"
+                          stroke="#fbbf24"
                           strokeWidth="2.2"
                           strokeLinecap="round"
                           opacity="0.9"
@@ -1493,7 +1557,7 @@ export default function Home() {
                         <path
                           d={ma200Path}
                           fill="none"
-                          stroke="#9333ea"
+                          stroke="#d97706"
                           strokeWidth="2.2"
                           strokeLinecap="round"
                           opacity="0.85"
@@ -1506,7 +1570,7 @@ export default function Home() {
                             y1={chartShape.padY}
                             x2={activeCoord.x}
                             y2={chartShape.height - chartShape.padY}
-                            stroke="#14532d"
+                            stroke="#78350f"
                             strokeWidth="1.5"
                             strokeDasharray="6 6"
                             opacity="0.35"
@@ -1516,14 +1580,14 @@ export default function Home() {
                             y1={activeCoord.y}
                             x2={chartShape.width - chartShape.padX}
                             y2={activeCoord.y}
-                            stroke="#14532d"
+                            stroke="#78350f"
                             strokeWidth="1.5"
                             strokeDasharray="4 6"
                             opacity="0.2"
                           />
-                          <circle cx={activeCoord.x} cy={activeCoord.y} r="8" fill="#14b8a6" opacity="0.2" />
-                          <circle cx={activeCoord.x} cy={activeCoord.y} r="4.5" fill="#0f766e" />
-                          <circle cx={activeCoord.x} cy={activeCoord.y} r="2.2" fill="#ecfdf5" />
+                          <circle cx={activeCoord.x} cy={activeCoord.y} r="8" fill="#fbbf24" opacity="0.2" />
+                          <circle cx={activeCoord.x} cy={activeCoord.y} r="4.5" fill="#f59e0b" />
+                          <circle cx={activeCoord.x} cy={activeCoord.y} r="2.2" fill="#fffbeb" />
                         </>
                       )}
                     </svg>
@@ -1531,7 +1595,7 @@ export default function Home() {
                       <div
                         className={`pointer-events-none absolute z-10 rounded-xl border px-3 py-2 text-xs shadow-lg backdrop-blur ${
                           isDarkMode
-                            ? "border-emerald-900/60 bg-zinc-950/95 text-zinc-100"
+                            ? "border-amber-800/60 bg-zinc-950/95 text-zinc-100"
                             : "border-zinc-200 bg-white/95 text-zinc-900"
                         }`}
                         style={{
@@ -1609,11 +1673,11 @@ export default function Home() {
                   Neutral (26-54)
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="h-2.5 w-2.5 rounded-full bg-lime-400" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-yellow-400" />
                   Greed (55-74)
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
                   Extreme Greed (75-100)
                 </span>
               </div>
@@ -1654,8 +1718,8 @@ export default function Home() {
                                 <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.04" />
                               </linearGradient>
                             </defs>
-                            <rect x={padX} y={toY(100)} width={width - padX * 2} height={toY(75) - toY(100)} fill="#065f46" opacity="0.14" />
-                            <rect x={padX} y={toY(75)} width={width - padX * 2} height={toY(55) - toY(75)} fill="#15803d" opacity="0.12" />
+                            <rect x={padX} y={toY(100)} width={width - padX * 2} height={toY(75) - toY(100)} fill="#d97706" opacity="0.14" />
+                            <rect x={padX} y={toY(75)} width={width - padX * 2} height={toY(55) - toY(75)} fill="#f59e0b" opacity="0.12" />
                             <rect x={padX} y={toY(55)} width={width - padX * 2} height={toY(25) - toY(55)} fill="#ca8a04" opacity="0.11" />
                             <rect x={padX} y={toY(25)} width={width - padX * 2} height={toY(0) - toY(25)} fill="#be123c" opacity="0.11" />
                             <path d={area} fill="url(#fngFill)" />
@@ -1782,7 +1846,7 @@ export default function Home() {
                     step="0.00000001"
                     value={myCoinAmount}
                     onChange={(event) => setMyCoinAmount(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-teal-400"
+                    className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-amber-500"
                     placeholder="e.g. 0.25"
                   />
                 </label>
@@ -1794,7 +1858,7 @@ export default function Home() {
                     step="0.01"
                     value={myCoinEntry}
                     onChange={(event) => setMyCoinEntry(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-teal-400"
+                    className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-amber-500"
                     placeholder="e.g. 54000"
                   />
                 </label>

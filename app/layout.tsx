@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BTC Tracker",
-  description: "BTC Tracker",
+  title: "Momentum",
+  description: "Momentum - Bitcoin market dashboard",
 };
 
 export default function RootLayout({
