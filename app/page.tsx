@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { type CSSProperties, type FormEvent, type TouchEvent, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
@@ -63,6 +64,8 @@ const FNG_RANGE_OPTIONS: Array<{ key: "1m" | "1y" | "5y"; label: string }> = [
 ];
 const AI_DEFAULT_HEADLINE = "Click Analyse to see what I think.";
 const MY_COIN_STORAGE_KEY = "btc_dashboard_my_coin_v1";
+const SPLASH_SESSION_KEY = "momentum_splash_seen_v1";
+const THEME_STORAGE_KEY = "momentum_theme_v1";
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -240,6 +243,16 @@ function loadMyCoinField(field: "amount" | "entry"): string {
   }
 }
 
+function shouldShowSplashInitially() {
+  if (typeof window === "undefined") return true;
+  return window.sessionStorage.getItem(SPLASH_SESSION_KEY) !== "1";
+}
+
+function loadThemePreference() {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(THEME_STORAGE_KEY) !== "light";
+}
+
 function findNearestPointIndex(points: ChartPoint[], targetTs: number) {
   if (points.length === 0) return -1;
   let left = 0;
@@ -397,9 +410,9 @@ function buildSyntheticFng(range: RangeKey): FngHistoryPayload {
 }
 
 export default function Home() {
-  const [showSplash, setShowSplash] = useState(true);
+  const [showSplash, setShowSplash] = useState<boolean>(() => shouldShowSplashInitially());
   const [isSplashFading, setIsSplashFading] = useState(false);
-  const [isPageVisible, setIsPageVisible] = useState(false);
+  const [isPageVisible, setIsPageVisible] = useState<boolean>(() => !shouldShowSplashInitially());
   const [authChecked, setAuthChecked] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
@@ -421,7 +434,7 @@ export default function Home() {
   const [isTypingAiHeadline, setIsTypingAiHeadline] = useState(false);
   const [myCoinAmount, setMyCoinAmount] = useState<string>(() => loadMyCoinField("amount"));
   const [myCoinEntry, setMyCoinEntry] = useState<string>(() => loadMyCoinField("entry"));
-  const isDarkMode = true;
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => loadThemePreference());
   const [pricePulse, setPricePulse] = useState<"up" | "down" | null>(null);
   const [rangeChartCache, setRangeChartCache] = useState<Partial<Record<RangeKey, ChartPayload>>>({});
   const canAccessDashboard = isAuthenticated || isDemoMode;
@@ -744,13 +757,17 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(SPLASH_SESSION_KEY, "1");
+    }
+    if (!showSplash) return;
     const fadeTimer = setTimeout(() => setIsSplashFading(true), 3000);
     const hideTimer = setTimeout(() => setShowSplash(false), 3600);
     return () => {
       clearTimeout(fadeTimer);
       clearTimeout(hideTimer);
     };
-  }, []);
+  }, [showSplash]);
 
   useEffect(() => {
     if (showSplash) {
@@ -872,6 +889,11 @@ export default function Home() {
     );
   }, [myCoinAmount, myCoinEntry]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? "dark" : "light");
+  }, [isDarkMode]);
+
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoginError(null);
@@ -946,6 +968,25 @@ export default function Home() {
     }
   };
 
+  const themeToggle = (
+    <button
+      type="button"
+      onClick={() => setIsDarkMode((prev) => !prev)}
+      className={`fixed right-4 top-4 z-50 inline-flex h-10 w-10 items-center justify-center rounded-full border backdrop-blur transition sm:right-6 sm:top-6 ${
+        isDarkMode
+          ? "border-amber-400/45 bg-amber-300/15 text-amber-100 hover:bg-amber-300/25"
+          : "border-amber-300/85 bg-white/90 text-amber-700 hover:bg-amber-50"
+      }`}
+      aria-label="Toggle light and dark mode"
+      title="Toggle light and dark mode"
+    >
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+        <circle cx="12" cy="12" r="4.2" />
+        <path d="M12 2.2v2.4M12 19.4v2.4M21.8 12h-2.4M4.6 12H2.2M18.95 5.05l-1.7 1.7M6.75 17.25l-1.7 1.7M18.95 18.95l-1.7-1.7M6.75 6.75l-1.7-1.7" />
+      </svg>
+    </button>
+  );
+
   const handleNavClick = (sectionId: SectionKey) => {
     if (typeof document === "undefined") return;
     const target = document.getElementById(sectionId);
@@ -964,6 +1005,7 @@ export default function Home() {
           isSplashFading ? "opacity-0" : "opacity-100"
         }`}
       >
+        {themeToggle}
         <div className="mx-auto flex min-h-[82vh] max-w-2xl flex-col items-center justify-center text-center">
           <p className="text-xs font-semibold uppercase tracking-[0.35em] text-amber-300/90">BTC Tracker</p>
           <h1 className="mt-4 text-6xl font-black tracking-tight text-amber-200 sm:text-7xl">Momentum</h1>
@@ -988,6 +1030,7 @@ export default function Home() {
             : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
         }`}
       >
+        {themeToggle}
         <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
           <div className="ui-card w-full p-5 text-center">
             <p className="text-sm ui-soft">Checking session...</p>
@@ -1008,6 +1051,7 @@ export default function Home() {
             : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
         }`}
       >
+        {themeToggle}
         <div className="mx-auto flex min-h-[78vh] max-w-md items-center justify-center">
           <form onSubmit={handleLogin} className="ui-card w-full space-y-4 p-5 sm:p-6">
             <div>
@@ -1079,8 +1123,33 @@ export default function Home() {
           : "bg-[radial-gradient(circle_at_15%_10%,rgba(196,242,165,0.55),rgba(244,252,210,0.65)_38%,rgba(241,247,223,0.85)_70%,rgba(234,242,210,0.95)_100%)] text-zinc-950"
       }`}
     >
-      <div className="mx-auto w-full max-w-7xl lg:grid lg:grid-cols-[220px_1fr] lg:gap-4">
-        <aside className="hidden lg:block">
+      {themeToggle}
+      <div className="mx-auto w-full max-w-7xl space-y-4">
+        <nav className="ui-card card-enter p-2" style={{ "--stagger": "20ms" } as CSSProperties}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/"
+              className="rounded-lg border border-amber-400/40 bg-amber-300/10 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-amber-100 transition hover:bg-amber-300/20"
+            >
+              Home
+            </Link>
+            <Link
+              href="/#overview"
+              className="rounded-lg border border-amber-300/70 bg-amber-400 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-950 transition hover:bg-amber-300"
+            >
+              Dashboard
+            </Link>
+            <Link
+              href="/journal"
+              className="rounded-lg border border-sky-500/45 bg-sky-300/10 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-sky-100 transition hover:bg-sky-300/20"
+            >
+              Journal
+            </Link>
+          </div>
+        </nav>
+
+        <div className="lg:grid lg:grid-cols-[220px_1fr] lg:gap-4">
+          <aside className="hidden lg:block">
           <div className="ui-card sticky top-4 p-3 card-enter" style={{ "--stagger": "40ms" } as CSSProperties}>
             <p className="px-2 text-xs font-semibold uppercase tracking-wide ui-soft">Navigation</p>
             <nav className="mt-2 space-y-1">
@@ -1111,9 +1180,9 @@ export default function Home() {
               ))}
             </nav>
           </div>
-        </aside>
+          </aside>
 
-        <div className="space-y-4">
+          <div className="space-y-4">
           <header id="overview" className="ui-card card-enter scroll-mt-4 p-4 sm:p-5" style={{ "--stagger": "80ms" } as CSSProperties}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1886,6 +1955,7 @@ export default function Home() {
             </div>
           </section>
         </div>
+      </div>
       </div>
     </main>
   );
